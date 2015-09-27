@@ -27,7 +27,7 @@ func New(b int, f cmpFunc) *Tree {
 }
 
 // idx <= len(*s)
-func (s *keys) insertAt(idx int, key interface{}) {
+func (s *keys) insertBefore(idx int, key interface{}) {
 	if idx == len(*s) {
 		*s = append(*s, key)
 	} else {
@@ -60,7 +60,7 @@ func (t Tree) findLeaf(k interface{}, n *Node) (idx int, found bool) {
 	return i, false
 }
 
-func (s *children) insertAt(idx int, c interface{}) {
+func (s *children) insertBefore(idx int, c interface{}) {
 	if idx == len(*s) {
 		*s = append(*s, c)
 	} else {
@@ -181,8 +181,8 @@ func (t *Tree) insert(n *Node, lv int, k, v interface{}) (kk, vv, old interface{
 		 *  +---+---+---+---+ #===# +---+---+---+
 		 *                           i+1
 		 */
-		n.keys.insertAt(i, k)
-		n.children.insertAt(i+1, v)
+		n.keys.insertBefore(i, k)
+		n.children.insertBefore(i+1, v)
 		if len(n.keys) < t.b {
 			return
 		}
@@ -214,8 +214,8 @@ func (t *Tree) insert(n *Node, lv int, k, v interface{}) (kk, vv, old interface{
 	if !split {
 		return
 	}
-	n.keys.insertAt(i, kk)
-	n.children.insertAt(i+1, vv)
+	n.keys.insertBefore(i, kk)
+	n.children.insertBefore(i+1, vv)
 	if len(n.children) <= t.b {
 		split = false
 		return
@@ -278,8 +278,8 @@ func (x *Node) borrowNextLeaf(y, p *Node, yi int) {
 }
 
 func (y *Node) borrowPrevLeaf(x, p *Node, yi int) {
-	y.keys.insertAt(0, x.keys.removeAt(len(x.keys)-1))
-	y.children.insertAt(1, x.children.removeAt(len(x.children)-1))
+	y.keys.insertBefore(0, x.keys.removeAt(len(x.keys)-1))
+	y.children.insertBefore(1, x.children.removeAt(len(x.children)-1))
 	p.keys[yi-1] = y.keys[0]
 }
 
@@ -372,8 +372,8 @@ func (x *Node) borrowNext(y, p *Node, yi int) {
  *                   x               y
  */
 func (y *Node) borrowPrev(x, p *Node, yi int) {
-	y.keys.insertAt(0, p.keys[yi-1])
-	y.children.insertAt(0, x.children.removeAt(len(x.children)-1))
+	y.keys.insertBefore(0, p.keys[yi-1])
+	y.children.insertBefore(0, x.children.removeAt(len(x.children)-1))
 	p.keys[yi-1] = x.keys.removeAt(len(x.keys) - 1)
 }
 

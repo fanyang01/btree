@@ -11,9 +11,9 @@ func compare(x, y interface{}) int {
 	return a - b
 }
 
-func TestTree(t *testing.T) {
-	N := 1 << 20
-	b := New(4, compare)
+func testOrder(t *testing.T, order, N int) {
+	t.Logf("testing b = %d...", order)
+	b := New(order, compare)
 	for i := 0; i < N; i++ {
 		b.Insert(i, i)
 	}
@@ -24,7 +24,14 @@ func TestTree(t *testing.T) {
 			t.Errorf("expected %d, got %d\n", i, v.(int))
 		}
 	}
-	for i := N - 1; i >= 0; i-- {
+	for i := N - 1; i >= N/2; i-- {
+		if v, ok := b.Remove(i); !ok {
+			t.Errorf("Remove %d failed\n", i)
+		} else if v.(int) != i {
+			t.Errorf("expected %d, got %d\n", i, v.(int))
+		}
+	}
+	for i := 0; i < N/2; i++ {
 		if v, ok := b.Remove(i); !ok {
 			t.Errorf("Remove %d failed\n", i)
 		} else if v.(int) != i {
@@ -33,10 +40,19 @@ func TestTree(t *testing.T) {
 	}
 }
 
-func TestRandom(t *testing.T) {
+func TestInOrder(t *testing.T) {
+	N := 1 << 16
+	// TODO: index out of range: testOrder(t, 3, N)
+	testOrder(t, 4, N)
+	testOrder(t, 5, N)
+	testOrder(t, 10, N)
+	testOrder(t, 50, N)
+}
+
+func testRandom(t *testing.T, order, N int) {
+	t.Logf("randomly testing b = %d...", order)
 	r := rand.New(rand.NewSource(time.Now().UnixNano()))
-	N := 1 << 20
-	b := New(4, compare)
+	b := New(order, compare)
 	m := make(map[int]int)
 	for i := 0; i < N; i++ {
 		random := r.Intn(N)
@@ -57,4 +73,12 @@ func TestRandom(t *testing.T) {
 			t.Errorf("expected %d, got %d\n", v, vv.(int))
 		}
 	}
+}
+
+func TestRandom(t *testing.T) {
+	N := 1 << 16
+	testRandom(t, 4, N)
+	testRandom(t, 5, N)
+	testRandom(t, 20, N)
+	testRandom(t, 100, N)
 }
