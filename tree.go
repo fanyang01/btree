@@ -244,3 +244,211 @@ func (t *Tree) Insert(k, v interface{}) (old interface{}, replace bool) {
 	t.root, t.height = x, t.height+1
 	return
 }
+
+/*
+ *          +---+---+---+           +---+---+---+
+ *          | k | k | k |           | k | k | k |
+ *      +---+---+---+---+       +---+---+---+---+
+ *      |   | v | v | v |       | p | v | v | v |
+ *      +---+---+---+---+       +---+---+---+---+
+ *              x                       y
+ *
+ * -->
+ *          +---+---+---+---+---+---+
+ *          | k | k | k | k | k | k |
+ *      +---+---+---+---+---+---+---+
+ *      | p | v | v | v | v | v | v |
+ *      +---+---+---+---+---+---+---+
+ *                    x
+ */
+func (x *Node) mergeNextLeaf(y, p *Node, yi int) {
+	x.children = append(x.children, y.children[1:]...)
+	x.keys = append(x.keys, y.keys...)
+	x.children[0] = y.children[0]
+	p.keys.removeAt(yi - 1)
+	p.children.removeAt(yi)
+	y.children = y.children[:0]
+	y.keys = y.keys[:0]
+}
+
+func (x *Node) borrowNextLeaf(y, p *Node, yi int) {
+	x.keys = append(x.keys, y.keys.removeAt(0))
+	x.children = append(x.children, y.children.removeAt(1))
+	p.keys[yi-1] = y.keys[0]
+}
+
+func (y *Node) borrowPrevLeaf(x, p *Node, yi int) {
+	y.keys.insertAt(0, x.keys.removeAt(len(x.keys)-1))
+	y.children.insertAt(1, x.children.removeAt(len(x.children)-1))
+	p.keys[yi-1] = y.keys[0]
+}
+
+/*
+ *                           p   yi
+ *                     +---+---+---+---+---+
+ *                     |   | k1|   | k2|   |
+ *                     +---+---+---+---+---+
+ *                     /         \
+ *                    /           \
+ *             +---+---+---+ +---+---+---+
+ *             |*1 | a |*2 | |*3 | b |*4 |
+ *             +---+---+---+ +---+---+---+
+ *                   x               y
+ * -->
+ *                           p
+ *                     +---+---+---+
+ *                     |   |k2 |   |
+ *                     +---+---+---+
+ *                     /         \
+ *                    /           \
+ *             +---+---+---+---+---+---+---+
+ *             |*1 | a |*2 |k1 |*3 | b |*4 |
+ *             +---+---+---+---+---+---+---+
+ *                   x
+ *
+ */
+func (x *Node) mergeNext(y, p *Node, yi int) {
+	x.children = append(x.children, y.children...)
+	x.keys = append(x.keys, p.keys[yi-1])
+	x.keys = append(x.keys, y.keys...)
+	p.keys.removeAt(yi - 1)
+	p.children.removeAt(yi)
+	// Clean y
+	y.children = y.children[:0]
+	y.keys = y.keys[:0]
+}
+
+/*
+ *                           p
+ *                     +---+---+---+
+ *                     |   | k |   |
+ *                     +---+---+---+
+ *                     /           \
+ *                    /             \
+ *             +---+---+---+   +---+---+---+---+---+
+ *             |*1 | a |*2 |   |*3 | b |*4 | c |*5 |
+ *             +---+---+---+   +---+---+---+---+---+
+ *                   x               y
+ * -->
+ *                           p
+ *                     +---+---+---+
+ *                     |   | b |   |
+ *                     +---+---+---+
+ *                     /           \
+ *                    /             \
+ *        +---+---+---+---+---+   +---+---+---+
+ *        |*1 | a |*2 | k |*3 |   |*4 | c |*5 |
+ *        +---+---+---+---+---+   +---+---+---+
+ *                   x               y
+ *
+ */
+func (x *Node) borrowNext(y, p *Node, yi int) {
+	x.keys = append(x.keys, p.keys[yi-1])
+	x.children = append(x.children, y.children.removeAt(0))
+	p.keys[yi-1] = y.keys.removeAt(0)
+}
+
+/*
+ *                           p  yi
+ *                     +---+---+---+
+ *                     |   | k |   |
+ *                     +---+---+---+
+ *                     /           \
+ *                    /             \
+ *        +---+---+---+---+---+   +---+---+---+
+ *        |*1 | a |*2 | b |*3 |   |*4 | c |*5 |
+ *        +---+---+---+---+---+   +---+---+---+
+ *                   x               y
+ * -->
+ *                           p
+ *                     +---+---+---+
+ *                     |   | b |   |
+ *                     +---+---+---+
+ *                     /           \
+ *                    /             \
+ *             +---+---+---+   +---+---+---+---+---+
+ *             |*1 | a |*2 |   |*3 | k |*4 | c |*5 |
+ *             +---+---+---+   +---+---+---+---+---+
+ *                   x               y
+ */
+func (y *Node) borrowPrev(x, p *Node, yi int) {
+	y.keys.insertAt(0, p.keys[yi-1])
+	y.children.insertAt(0, x.children.removeAt(len(x.children)-1))
+	p.keys[yi-1] = x.keys.removeAt(len(x.keys) - 1)
+}
+
+func (t *Tree) Remove(k interface{}) (v interface{}, found bool) {
+	if t.height == 0 {
+		return nil, false
+	}
+	v, found = t.remove(t.root, nil, t.height, 0, k)
+	if len(t.root.children) == 1 {
+		n := t.root.children[0]
+		if n == nil {
+			t.root = nil
+		} else {
+			t.root = n.(*Node)
+		}
+		t.height--
+	}
+	return
+}
+
+func (t *Tree) remove(n, p *Node, lv, pos int, k interface{}) (v interface{}, ok bool) {
+	if lv == 1 {
+		i, found := t.findLeaf(k, n)
+		if !found {
+			return
+		}
+		ok = true
+		n.keys.removeAt(i - 1)
+		v = n.children.removeAt(i)
+		if len(n.keys) >= t.b/2 || p == nil {
+			return
+		}
+		switch {
+		case pos < len(p.children)-1: // not the last child of parent
+			next := p.children[pos+1].(*Node)
+			if len(next.children) == t.b/2 {
+				n.mergeNextLeaf(next, p, pos+1)
+			} else {
+				n.borrowNextLeaf(next, p, pos+1)
+			}
+		case pos == len(p.children)-1: // last child of parent
+			prev := p.children[pos-1].(*Node)
+			if len(prev.children) == t.b/2 {
+				prev.mergeNextLeaf(n, p, pos)
+			} else {
+				n.borrowPrevLeaf(prev, p, pos)
+			}
+		default:
+			panic("shouldn't get here")
+		}
+		return
+	}
+	// Internal node
+	i := t.find(k, n)
+	v, ok = t.remove(n.children[i].(*Node), n, lv-1, i, k)
+	if len(n.children) >= t.b/2 || p == nil {
+		return
+	}
+	switch {
+	case pos < len(p.children)-1: // not the last child of parent
+		next := p.children[pos+1].(*Node)
+		if len(next.children) == t.b/2 {
+			n.mergeNext(next, p, pos+1)
+		} else {
+			n.borrowNext(next, p, pos+1)
+		}
+	case pos == len(p.children)-1: // last child of parent
+		prev := p.children[pos-1].(*Node)
+		if len(prev.children) == t.b/2 {
+			prev.mergeNext(n, p, pos)
+		} else {
+			n.borrowPrev(prev, p, pos)
+		}
+	default:
+		panic("shouldn't get here")
+	}
+	return
+}
