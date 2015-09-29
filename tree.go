@@ -1,29 +1,47 @@
 package btree
 
-import "sort"
-
-type (
-	children []interface{}
-	keys     []interface{}
-
-	Node struct {
-		children children
-		keys     keys
-	}
-
-	cmpFunc func(x, y interface{}) int
-	Tree    struct {
-		root            *Node
-		b, height, size int
-		cmp             cmpFunc
-	}
+import (
+	"sort"
+	"sync"
 )
 
-func New(b int, f cmpFunc) *Tree {
-	return &Tree{
-		b:   b,
-		cmp: f,
+type (
+	children []Pointer
+	keys     []kT
+)
+
+type Node struct {
+	ref      Pointer
+	children children
+	keys     keys
+	t        *Tree
+}
+
+type cmpFunc func(x, y interface{}) int
+
+type Tree struct {
+	store        Store
+	pool         sync.Pool
+	root         Pointer
+	b            int
+	height, size int
+	cmp          cmpFunc
+}
+
+func New(store Store, b int, f cmpFunc) *Tree {
+	t := &Tree{
+		store: store,
+		b:     b,
+		cmp:   f,
 	}
+	t.pool = sync.Pool{
+		New: func() interface{} {
+			return &Node{
+				t: t,
+			}
+		},
+	}
+	return t
 }
 
 // idx <= len(*s)
@@ -75,10 +93,6 @@ func (s *children) removeAt(idx int) interface{} {
 	copy((*s)[idx:], (*s)[idx+1:])
 	*s = (*s)[:len(*s)-1]
 	return c
-}
-
-func (t *Tree) newNode() *Node {
-	return &Node{}
 }
 
 /*
@@ -141,27 +155,40 @@ func (t *Tree) split(x *Node, at int) (key interface{}, y *Node) {
 	return
 }
 
-func (t *Tree) Lookup(k interface{}) (v interface{}, ok bool) {
-	level, n := t.height, t.root
+func (t *Tree) Lookup(k interface{}) (v vT, ok bool, err error) {
+	level := t.height
 	if level == 0 {
+		return
+	}
+	var n *Node
+	if n, err = t.store.ReadNode(t.root); err != nil {
 		return
 	}
 	for ; level > 1; level-- {
 		i := t.find(k, n)
-		n = n.children[i].(*Node)
+		if n, err = t.store.ReadNode(n.children[i]); err != nil {
+			return
+		}
 	}
 	if i, found := t.findLeaf(k, n); found {
-		return n.children[i], true
+		if v, err = t.store.ReadLeaf(n.children[i]); err != nil {
+			return
+		}
+		ok = true
 	}
 	return
 }
 
-func (t *Tree) insert(n *Node, lv int, k, v interface{}) (kk, vv, old interface{}, split, replace bool) {
+func (t *Tree) insert(n *Node, lv int, k, v interface{}) (kk kT, vv Pointer, old vT, split, replace bool, err error) {
 	if lv == 1 { // Leaf
 		i, found := t.findLeaf(k, n)
 		if found {
-			old, replace = n.children[i], true
-			n.children[i] = v
+			if old, err = t.store.ReadLeaf(n.children[i]); err != nil {
+				return
+			}
+			if err = t.store.WriteLeaf(n.children[i], v); err == nil {
+				replace = true
+			}
 			return
 		}
 		/*
@@ -181,8 +208,15 @@ func (t *Tree) insert(n *Node, lv int, k, v interface{}) (kk, vv, old interface{
 		 *  +---+---+---+---+ #===# +---+---+---+
 		 *                           i+1
 		 */
+		var ref Pointer
+		if ref, err = t.store.AllocLeaf(); err != nil {
+			return
+		}
+		if err = t.store.WriteLeaf(ref, v); err != nil {
+			return
+		}
 		n.keys.insertBefore(i, k)
-		n.children.insertBefore(i+1, v)
+		n.children.insertBefore(i+1, ref)
 		if len(n.keys) < t.b {
 			return
 		}
@@ -210,7 +244,17 @@ func (t *Tree) insert(n *Node, lv int, k, v interface{}) (kk, vv, old interface{
 	 *                      i          i+1
 	 */
 	i := t.find(k, n)
-	kk, vv, old, split, replace = t.insert(n.children[i].(*Node), lv-1, k, v)
+	var child *Node
+	if child, err = t.store.ReadNode(n.children[i]); err != nil {
+		return
+	}
+	kk, vv, old, split, replace, err = t.insert(child, lv-1, k, v)
+	if err != nil {
+		return
+	}
+	if err = t.store.WriteNode(child.ref, child); err != nil {
+		return
+	}
 	if !split {
 		return
 	}
@@ -224,24 +268,44 @@ func (t *Tree) insert(n *Node, lv int, k, v interface{}) (kk, vv, old interface{
 	return
 }
 
-func (t *Tree) Insert(k, v interface{}) (old interface{}, replace bool) {
+func (t *Tree) Insert(k, v interface{}) (old interface{}, replace bool, err error) {
 	if t.height == 0 {
 		x := t.newNode()
 		x.keys = append(x.keys, k)
-		x.children = append(x.children, nil, v)
-		t.root, t.height = x, 1
+		var ref Pointer
+		if ref, err = t.store.AllocLeaf(); err != nil {
+			return
+		}
+		if err = t.store.WriteLeaf(ref, v); err != nil {
+			return
+		}
+		x.children = append(x.children, nil, ref)
+		if err = t.store.WriteNode(x.ref, x); err != nil {
+			return
+		}
+		t.root = x
+		t.height = 1
 		return
 	}
+	var root *Node
+	root, err = t.store.ReadNode(t.root)
 	var kk, vv interface{}
 	var split bool
-	kk, vv, old, split, replace = t.insert(t.root, t.height, k, v)
+	kk, vv, old, split, replace, err = t.insert(root, t.height, k, v)
+	if err = t.store.WriteNode(root.ref, root); err != nil {
+		return
+	}
 	if !split {
 		return
 	}
 	x := t.newNode()
 	x.keys = append(x.keys, kk)
 	x.children = append(x.children, t.root, vv)
-	t.root, t.height = x, t.height+1
+	if err = t.store.WriteNode(x.ref, x); err != nil {
+		return
+	}
+	t.root = x
+	t.height++
 	return
 }
 
@@ -267,8 +331,9 @@ func (x *Node) mergeNextLeaf(y, p *Node, yi int) {
 	x.children[0] = y.children[0]
 	p.keys.removeAt(yi - 1)
 	p.children.removeAt(yi)
-	y.children = y.children[:0]
-	y.keys = y.keys[:0]
+	x.t.freeNode(y)
+	// y.children = y.children[:0]
+	// y.keys = y.keys[:0]
 }
 
 func (x *Node) borrowNextLeaf(y, p *Node, yi int) {
@@ -313,9 +378,10 @@ func (x *Node) mergeNext(y, p *Node, yi int) {
 	x.keys = append(x.keys, y.keys...)
 	p.keys.removeAt(yi - 1)
 	p.children.removeAt(yi)
-	// Clean y
-	y.children = y.children[:0]
-	y.keys = y.keys[:0]
+	// Clear y
+	x.t.freeNode(y)
+	// y.children = y.children[:0]
+	// y.keys = y.keys[:0]
 }
 
 /*
@@ -377,32 +443,41 @@ func (y *Node) borrowPrev(x, p *Node, yi int) {
 	p.keys[yi-1] = x.keys.removeAt(len(x.keys) - 1)
 }
 
-func (t *Tree) Remove(k interface{}) (v interface{}, found bool) {
+func (t *Tree) Remove(k interface{}) (v interface{}, found bool, err error) {
 	if t.height == 0 {
-		return nil, false
+		return
 	}
-	v, found = t.remove(t.root, nil, t.height, 0, k)
-	if len(t.root.children) == 1 {
-		n := t.root.children[0]
-		if n == nil {
-			t.root = nil
-		} else {
-			t.root = n.(*Node)
-		}
+	var root *Node
+	root, err = t.store.ReadNode(t.root)
+	v, found, err = t.remove(root, nil, t.height, 0, k)
+	if err = t.store.WriteNode(root.ref, root); err != nil {
+		return
+	}
+	if len(root.children) == 1 {
+		n := root.children[0]
+		t.store.DeallocNode(root)
+		t.root = n
 		t.height--
 	}
 	return
 }
 
-func (t *Tree) remove(n, p *Node, lv, pos int, k interface{}) (v interface{}, ok bool) {
+func (t *Tree) remove(n, p *Node, lv, pos int, k interface{}) (v interface{}, ok bool, err error) {
 	if lv == 1 {
 		i, found := t.findLeaf(k, n)
 		if !found {
 			return
 		}
 		ok = true
+		ref := n.children[i]
+		if v, err = t.store.ReadLeaf(ref); err != nil {
+			return
+		}
+		if err = t.store.DeallocLeaf(ref); err != nil {
+			return
+		}
 		n.keys.removeAt(i - 1)
-		v = n.children.removeAt(i)
+		n.children.removeAt(i)
 		if len(n.keys) >= t.b/2 || p == nil {
 			return
 		}
@@ -428,7 +503,14 @@ func (t *Tree) remove(n, p *Node, lv, pos int, k interface{}) (v interface{}, ok
 	}
 	// Internal node
 	i := t.find(k, n)
-	v, ok = t.remove(n.children[i].(*Node), n, lv-1, i, k)
+	var child *Node
+	if child, err = t.store.ReadNode(n.children[i]); err != nil {
+		return
+	}
+	if v, ok, err = t.remove(child, n, lv-1, i, k); err != nil {
+		return
+	}
+	t.store.WriteNode(child.ref, child)
 	if len(n.children) >= t.b/2 || p == nil {
 		return
 	}
